@@ -1,0 +1,87 @@
+import requests
+from bs4 import BeautifulSoup
+import pandas as pd
+import re
+import datetime
+
+def scrape_yahoo_finance_history(url):
+    """
+    Scrape historical data from Yahoo Finance and save to Excel.
+    
+    Args:
+        url (str): Yahoo Finance historical data URL
+    """
+    # Send request to get the page content
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    }
+    
+    print(f"Requesting data from: {url}")
+    response = requests.get(url, headers=headers)
+    
+    if response.status_code != 200:
+        print(f"Failed to retrieve page: Status code {response.status_code}")
+        return
+    
+    # Parse the HTML content
+    soup = BeautifulSoup(response.text, 'html.parser')
+    
+    # Find the table - it comes after the marker in the HTML
+    # First locate the body tag with class="yf-1jecxey"
+    table_body = soup.find('tbody')
+    
+    if not table_body:
+        print("Could not find the table body in the HTML")
+        return
+    
+    # Extract data from table rows
+    data = []
+    rows = table_body.find_all('tr')
+    
+    for row in rows:
+        cells = row.find_all('td')
+        if len(cells) >= 7:  # Ensure we have enough columns
+            row_data = [cell.text.strip() for cell in cells]
+            data.append(row_data)
+    
+    if not data:
+        print("No data found in the table")
+        return
+    
+    # Create DataFrame
+    columns = ["Date", "Open", "High", "Low", "Close", "Adj Close", "Volume"]
+    df = pd.DataFrame(data, columns=columns)
+    
+    # Clean data and convert types
+    for col in ["Open", "High", "Low", "Close", "Adj Close"]:
+        df[col] = df[col].replace(',', '', regex=True).astype(float)
+    
+    # Convert Volume to numeric (remove commas and convert)
+    df["Volume"] = df["Volume"].replace(',', '', regex=True).astype(float)
+    
+    # Convert Date to datetime
+    df["Date"] = pd.to_datetime(df["Date"])
+    
+    # Extract ticker symbol from URL
+    ticker_match = re.search(r'/quote/([A-Z]+)/', url)
+    ticker = ticker_match.group(1) if ticker_match else "stock"
+    
+    # Create filename with ticker and current date
+    today = datetime.datetime.now().strftime("%Y-%m-%d")
+    filename = f"{ticker}_historical_data_{today}.xlsx"
+    
+    # Save to Excel
+    df.to_excel(filename, index=False)
+    print(f"Data successfully saved to {filename}")
+    
+    return df
+
+if __name__ == "__main__":
+    # Example usage
+    url = "https://finance.yahoo.com/quote/BRK-B/history/?period1=1712577105&period2=1744113097"
+    df = scrape_yahoo_finance_history(url)
+    
+    # Display first few rows of the data
+    if df is not None:
+        print("\nPreview of the data:")
+        print(df.head())

@@ -25,56 +25,103 @@ def get_period_timestamps(start_date, end_date):
     try:
         # Input validation
         if not start_date or not end_date:
-            raise ValueError("Start date and end date must be provided")
+            logger.warning("Missing dates, using default date range (last 30 days)")
+            end_dt = datetime.datetime.now()
+            start_dt = end_dt - datetime.timedelta(days=30)
+            start_date = start_dt.strftime('%Y-%m-%d')
+            end_date = end_dt.strftime('%Y-%m-%d')
             
         # Check if the date strings appear to be from the future
         current_year = datetime.datetime.now().year
-        if int(start_date.split('-')[0]) > current_year or int(end_date.split('-')[0]) > current_year:
-            logger.warning(f"Future dates detected: start={start_date}, end={end_date}")
-            logger.warning(f"Current year is {current_year}, adjusting dates to current year")
+        current_month = datetime.datetime.now().month
+        current_day = datetime.datetime.now().day
+        
+        # Parse dates safely
+        try:
+            start_year = int(start_date.split('-')[0])
+            end_year = int(end_date.split('-')[0])
             
-            # Use the same month/day but change year to current
-            parts_start = start_date.split('-')
-            parts_end = end_date.split('-')
+            # Fix future dates by using current year
+            if start_year > current_year:
+                logger.warning(f"Future year in start date: {start_year} > {current_year}")
+                parts_start = start_date.split('-')
+                start_date = f"{current_year}-{parts_start[1]}-{parts_start[2]}"
+                logger.info(f"Adjusted start date to current year: {start_date}")
+                
+            if end_year > current_year:
+                logger.warning(f"Future year in end date: {end_year} > {current_year}")
+                parts_end = end_date.split('-')
+                end_date = f"{current_year}-{parts_end[1]}-{parts_end[2]}"
+                logger.info(f"Adjusted end date to current year: {end_date}")
+        except (IndexError, ValueError) as e:
+            logger.warning(f"Error parsing year from dates: {e}")
+            end_dt = datetime.datetime.now()
+            start_dt = end_dt - datetime.timedelta(days=30)
+            start_date = start_dt.strftime('%Y-%m-%d')
+            end_date = end_dt.strftime('%Y-%m-%d')
+        
+        try:
+            # Convert to datetime objects
+            start_dt = datetime.datetime.strptime(start_date, '%Y-%m-%d')
+            end_dt = datetime.datetime.strptime(end_date, '%Y-%m-%d')
             
-            # Reset to current year
-            start_date = f"{current_year}-{parts_start[1]}-{parts_start[2]}"
-            end_date = f"{current_year}-{parts_end[1]}-{parts_end[2]}"
+            # Make sure dates aren't in the future
+            now = datetime.datetime.now()
+            if start_dt > now:
+                logger.warning(f"Start date is in the future: {start_date}")
+                start_dt = now - datetime.timedelta(days=30)
+                start_date = start_dt.strftime('%Y-%m-%d')
+                
+            if end_dt > now:
+                logger.warning(f"End date is in the future: {end_date}")
+                end_dt = now
+                end_date = end_dt.strftime('%Y-%m-%d')
             
-            logger.info(f"Adjusted dates: start={start_date}, end={end_date}")
-        
-        # Convert to datetime objects
-        start_dt = datetime.datetime.strptime(start_date, '%Y-%m-%d')
-        end_dt = datetime.datetime.strptime(end_date, '%Y-%m-%d')
-        
-        # Make sure start is before end
-        if start_dt > end_dt:
-            logger.warning("Start date is after end date, swapping dates")
-            start_dt, end_dt = end_dt, start_dt
-        
-        # Add a day to end_date to make it inclusive
-        end_dt = end_dt + datetime.timedelta(days=1)
-        
-        # Convert to timestamps (seconds since epoch)
-        period1 = int(start_dt.timestamp())
-        period2 = int(end_dt.timestamp())
-        
-        logger.debug(f"Generated timestamps: period1={period1}, period2={period2}")
-        
-        # Double check the timestamps
-        if period1 > time.time() or period2 > time.time():
-            logger.warning("Future timestamps detected, defaulting to last 30 days")
-            end_timestamp = int(time.time())
-            start_timestamp = end_timestamp - (30 * 24 * 60 * 60)
-            return start_timestamp, end_timestamp
+            # Make sure start is before end
+            if start_dt > end_dt:
+                logger.warning(f"Start date {start_date} is after end date {end_date}, swapping")
+                start_dt, end_dt = end_dt, start_dt
+                start_date, end_date = end_date, start_date
             
-        return period1, period2
+            # Add a day to end_date to make it inclusive
+            end_dt = end_dt + datetime.timedelta(days=1)
+            
+            # Make sure date range is reasonable (not more than 2 years)
+            date_diff = (end_dt - start_dt).days
+            if date_diff > 730:  # ~2 years
+                logger.warning(f"Date range too large: {date_diff} days, limiting to 2 years")
+                start_dt = end_dt - datetime.timedelta(days=730)
+            
+            logger.info(f"Using date range: {start_dt.strftime('%Y-%m-%d')} to {end_dt.strftime('%Y-%m-%d')}")
+            
+            # Convert to timestamps (seconds since epoch)
+            period1 = int(start_dt.timestamp())
+            period2 = int(end_dt.timestamp())
+            
+            logger.debug(f"Generated timestamps: period1={period1}, period2={period2}")
+            
+            # One final safety check for future timestamps
+            now_ts = int(time.time())
+            if period1 > now_ts or period2 > now_ts:
+                logger.warning(f"Future timestamp detected after all validations, using current time")
+                logger.warning(f"period1={period1}, period2={period2}, now={now_ts}")
+                # Default to last 30 days
+                period2 = now_ts
+                period1 = now_ts - (30 * 24 * 60 * 60)
+            
+            return period1, period2
+            
+        except Exception as date_e:
+            logger.error(f"Error processing dates: {str(date_e)}")
+            # Default to last 30 days
+            now_ts = int(time.time())
+            return now_ts - (30 * 24 * 60 * 60), now_ts
+            
     except Exception as e:
         logger.error(f"Error converting dates to timestamps: {str(e)}")
         # Default to last 30 days if there's an error
-        end_timestamp = int(time.time())
-        start_timestamp = end_timestamp - (30 * 24 * 60 * 60)
-        return start_timestamp, end_timestamp
+        now_ts = int(time.time())
+        return now_ts - (30 * 24 * 60 * 60), now_ts
 
 def scrape_yahoo_finance_history(url):
     """

@@ -41,7 +41,9 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("SESSION_SECRET", "dev-secret-key")
 
 # Configure for Render.com
-if os.environ.get("RENDER") or os.environ.get("PORT"):
+if os.environ.get("RENDER") == 'true' or os.environ.get("RENDER_SERVICE_ID"):
+    logger.info("Running on Render.com platform")
+    
     # Trust the Render proxy
     app.config['PREFERRED_URL_SCHEME'] = 'https'
     # Keep the session cookie secure on Render.com
@@ -50,10 +52,17 @@ if os.environ.get("RENDER") or os.environ.get("PORT"):
     app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
     # Increased timeout for Render's free tier spin-ups
     app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=7)
-    # Set a flag to prioritize API over scraping when on Render.com
+    
+    # Now always use API over web scraping on Render.com 
     PREFER_API_OVER_SCRAPING = True
+    logger.info("Using yfinance API as primary data source on Render.com")
 else:
-    PREFER_API_OVER_SCRAPING = False
+    # Read from environment in case it was set in main.py
+    PREFER_API_OVER_SCRAPING = os.environ.get('PREFER_API_OVER_SCRAPING') == 'true'
+    if PREFER_API_OVER_SCRAPING:
+        logger.info("API-first mode enabled by environment variable")
+    else:
+        logger.info("Using web scraping as primary data source in development")
 
 # Configure cache
 cache_config = {
@@ -95,15 +104,32 @@ def scrape():
         if not ticker:
             flash("Please enter a ticker symbol", "danger")
             return redirect(url_for('index'))
-        
-        # Convert dates to timestamps for Yahoo Finance URL
-        period1, period2 = get_period_timestamps(start_date, end_date)
-        
-        # Create Yahoo Finance URL
-        url = f"https://finance.yahoo.com/quote/{ticker}/history/?period1={period1}&period2={period2}"
+            
+        # Validate and fix dates
+        try:
+            # Detect future years
+            current_year = datetime.now().year
+            if start_date and int(start_date.split('-')[0]) > current_year:
+                # Fix start_date to use current year
+                parts = start_date.split('-')
+                start_date = f"{current_year}-{parts[1]}-{parts[2]}"
+                logger.warning(f"Fixed future year in start_date to: {start_date}")
+                
+            if end_date and int(end_date.split('-')[0]) > current_year:
+                # Fix end_date to use current year
+                parts = end_date.split('-')
+                end_date = f"{current_year}-{parts[1]}-{parts[2]}"
+                logger.warning(f"Fixed future year in end_date to: {end_date}")
+        except Exception as e:
+            logger.warning(f"Error validating dates: {str(e)}")
+            # Use default dates if there's an issue
+            end_dt = datetime.now()
+            start_dt = end_dt - timedelta(days=30)
+            start_date = start_dt.strftime('%Y-%m-%d')
+            end_date = end_dt.strftime('%Y-%m-%d')
         
         # Check cache first
-        cache_key = f"{ticker}_{period1}_{period2}"
+        cache_key = f"{ticker}_{start_date}_{end_date}"
         cached_data = cache.get(cache_key)
         
         if cached_data is not None:
@@ -111,26 +137,32 @@ def scrape():
             df = cached_data
             source = "cache"
         else:
-            # On Render.com, use the API first since scraping is often blocked
+            # When on Render.com, prioritize the API approach since it's more reliable
             if PREFER_API_OVER_SCRAPING and ALTERNATIVE_API_AVAILABLE:
-                logger.info(f"On Render.com platform, trying API first for {ticker}")
+                logger.info(f"Using yfinance API for {ticker} (start: {start_date}, end: {end_date})")
                 df = get_stock_data_from_api(ticker, start_date, end_date)
                 source = "api"
                 
-                # If API fails, then try scraping as a fallback
+                # Only try scraping as a last resort if API fails
                 if df is None or df.empty:
-                    logger.debug(f"API failed, trying to scrape data for {ticker}")
+                    logger.debug(f"API failed, trying web scraping for {ticker} as fallback")
+                    # Convert dates to timestamps for Yahoo Finance URL
+                    period1, period2 = get_period_timestamps(start_date, end_date)
+                    url = f"https://finance.yahoo.com/quote/{ticker}/history/?period1={period1}&period2={period2}"
                     df = scrape_yahoo_finance_history(url)
                     source = "scrape"
             else:
-                # When not on Render.com, try scraping first
+                # When not on Render.com (local development), we can try scraping first
                 logger.debug(f"Scraping data for {ticker}")
+                # Convert dates to timestamps for Yahoo Finance URL
+                period1, period2 = get_period_timestamps(start_date, end_date)
+                url = f"https://finance.yahoo.com/quote/{ticker}/history/?period1={period1}&period2={period2}"
                 df = scrape_yahoo_finance_history(url)
                 source = "scrape"
                 
                 # If scraping fails, try alternative API if available
                 if (df is None or df.empty) and ALTERNATIVE_API_AVAILABLE:
-                    logger.info(f"Scraping failed, trying alternative API for {ticker}")
+                    logger.info(f"Scraping failed, trying yfinance API for {ticker}")
                     df = get_stock_data_from_api(ticker, start_date, end_date)
                     source = "api"
             
